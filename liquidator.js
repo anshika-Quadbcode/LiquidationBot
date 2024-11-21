@@ -1,111 +1,5 @@
 
 
-// const { Principal } = require('@dfinity/principal');
-// const { Actor, HttpAgent } = require('@dfinity/agent');
-
-// const canisterId = 'v6dul-ayaaa-aaaam-adosq-cai';
-// const agent = new HttpAgent({
-//   host: 'https://a4gq6-oaaaa-aaaab-qaa4q-cai.raw.icp0.io/?id=v6dul-ayaaa-aaaam-adosq-cai',
-// });
-// const canister = Actor.createActor(canisterId, { agent });
-
-// // Function to call the backend canister liquidation_call
-// async function triggerLiquidation(asset, collateral_asset, amount, on_behalf_of) {
-//   try {
-//     const result = await canister.liquidation_call({
-//       asset,
-//       collateral_asset,
-//       amount,
-//       on_behalf_of,
-//     });
-
-//     if (result.ok) {
-//       console.log('Liquidation successful');
-//     } else {
-//       console.error('Error triggering liquidation:', result.err);
-//     }
-//   } catch (error) {
-//     console.error('Failed to call liquidation:', error);
-//   }
-// }
-
-// // Function to calculate health factor
-// function calculateHealthFactor(position) {
-//   const { total_collateral_value, total_borrowed_value, liquidation_threshold } = position;
-//   if (total_borrowed_value === 0) {
-//     return Number.MAX_SAFE_INTEGER; // Max health factor when there is no debt
-//   }
-//   return (total_collateral_value * liquidation_threshold) / total_borrowed_value;
-// }
-
-// // Function to get the price of an asset in USD
-// async function getExchangeRate(asset_symbol) {
-//   try {
-//     const result = await canister.get_exchange_rates(asset_symbol, 'USD', 1);
-//     if (result.ok) {
-//       const [price, timestamp] = result.ok;
-//       return price;
-//     } else {
-//       console.error(`Error fetching price for ${asset_symbol}:`, result.err);
-//       return null;
-//     }
-//   } catch (error) {
-//     console.error(`Failed to get exchange rate for ${asset_symbol}:`, error);
-//     return null;
-//   }
-// }
-
-// // Function to check user health factor and trigger liquidation if necessary
-// async function checkUserHealthFactor() {
-//   try {
-//     const userDataResponse = await canister.get_all_users();
-//     const userData = userDataResponse.ok ? userDataResponse.ok : [];
-
-//     for (const [principal, user] of userData) {
-//       const reserves = user.reserves || [];
-//       let total_collateral = 0;
-//       let total_debt = 0;
-
-//       // Calculate total collateral and debt in USD
-//       for (const [asset_symbol, reserveData] of reserves) {
-//         const { asset_supply, asset_borrow, is_collateral } = reserveData;
-        
-//         // Fetch USD price for each asset
-//         const assetSupplyPrice = await getExchangeRate(asset_symbol);
-//         const assetBorrowPrice = await getExchangeRate(asset_symbol);
-
-//         if (assetSupplyPrice !== null && is_collateral) {
-//           total_collateral += asset_supply * assetSupplyPrice; // Convert supply to USD
-//         }
-//         if (assetBorrowPrice !== null) {
-//           total_debt += asset_borrow * assetBorrowPrice; // Convert borrow to USD
-//         }
-//       }
-
-//       const position = {
-//         total_collateral_value: total_collateral,
-//         total_borrowed_value: total_debt,
-//         liquidation_threshold: user.liquidation_threshold || 0,
-//       };
-
-//       const healthFactor = calculateHealthFactor(position);
-
-//       if (healthFactor < 1) {
-//         // Trigger liquidation if health factor is less than 1
-//         const asset = reserves[0] ? reserves[0][0] : ""; // Using the first asset for demonstration
-//         triggerLiquidation(asset, asset, total_debt, principal);
-//       }
-//     }
-//   } catch (error) {
-//     console.error('Error fetching user data from canister:', error);
-//   }
-// }
-
-// // Set interval to check user health factor every minute
-// setInterval(() => {
-//   checkUserHealthFactor();
-// }, 60000);
-
 //TODO give an identity to the bot (principal)
 //is THE reward will be recieved on platform or the wallet
 //TODO handle large set of users - batches, promises, parallel processesing
@@ -116,36 +10,192 @@
 //then he can just click on call liquidation with that user principal
 
 
-// PROBLEM is create actor without backend.did
+//change liq_call logic for auto liq by platform
 
-const { Principal } = require('@dfinity/principal');
-const { Actor, HttpAgent } = require('@dfinity/agent');
-
-const canisterId = 'v6dul-ayaaa-aaaam-adosq-cai';
-const agent = new HttpAgent({
-  host: 'https://a4gq6-oaaaa-aaaab-qaa4q-cai.raw.icp0.io/?id=v6dul-ayaaa-aaaam-adosq-cai',
-});
-const canister = Actor.createActor(canisterId, { agent });
+// PROBLEM is create actor without backend.did - athaarv
+// import { dfinance_backend } from "./index.js";
 
 
-async function triggerLiquidation(asset, collateral_asset, amount, on_behalf_of) {
+
+import { dfinance_backend } from "./index.js";
+
+const cache = {};
+const POLLING_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+
+async function fetchExchangeRate(baseAsset) {
   try {
-    const result = await canister.liquidation_call({
-      asset,
-      collateral_asset,
-      amount,
-      on_behalf_of,
-    });
+    const result = await dfinance_backend.get_exchange_rates(baseAsset, [], 100000000);
+    // console.log(result);
+    if (result && result.Ok) {
+      const [price, timestamp] = result.Ok;
+      console.log(`Exchange rate fetched successfully for ${baseAsset}:`, price, timestamp);
 
-    if (result.ok) {
-      console.log('Liquidation successful');
+     
+      return price;
     } else {
-      console.error('Error triggering liquidation:', result.err);
+      console.error(`Error fetching price for ${baseAsset}:`, result.Err || "Unknown error");
+      return null;
     }
   } catch (error) {
-    console.error('Failed to call liquidation:', error);
+    console.error(`Failed to fetch exchange rate for ${baseAsset}:`, error);
+    return null;
+  }
+
+}
+
+
+async function updateCacheAndTriggerActions(assets) {
+  for (const asset of assets) {
+    const newPrice = await fetchExchangeRate(asset);
+
+    if (newPrice !== null) {
+      if (!cache[asset] || cache[asset] !== newPrice) {
+        console.log(`Price change detected for ${asset}: Old: ${cache[asset]}, New: ${newPrice}`);
+        cache[asset] = newPrice;
+
+        
+        await fetchUsersByAsset(asset);
+      }
+    }
   }
 }
+
+async function fetchUsersByAsset(asset) {
+  try {
+    const allUsers = await dfinance_backend.get_all_users();
+    // console.log("all users", allUsers);
+    const usersWithAsset = allUsers.filter(([principal, userData]) => {
+      if (userData.reserves && Array.isArray(userData.reserves)) {
+        const reserves = userData.reserves || [];
+        // console.log("usereserve", reserves);
+
+      
+        const hasAsset = reserves.some(reserve => reserve[0][0] === asset);
+        console.log(`User ${principal} has asset ${asset}:`, hasAsset);
+
+        return hasAsset;
+      }
+      return false;
+    });
+
+
+    usersWithAsset.forEach(async ([principal, userData]) => {
+      // console.log("Principal:", principal);
+      // console.log("UserData:", JSON.stringify(userData, null, 2));
+      //loop all reserves -> call get normalizedincome and getnormalizeddebt multiply it with assetprice from cache 
+      //add it up to totalcollateral and totaldebt 
+      //pass it to h.f formula
+      console.log(`Users using ${asset} as collateral or debt:`, principal);
+
+      const reserves = userData.reserves || [];
+      let totalCollateral = 0;
+      let totalDebt = 0;
+      let largestBorrowAsset = { asset: null, value: 0 };
+      let largestCollateralAsset = { asset: null, value: 0 };
+      //max debt asset, max collateral asset
+      for (const reserve of reserves) {
+        const [reserveAsset] = reserve[0];
+         console.log('reservename', [reserveAsset]);
+        const userreserveData = reserve[0][1];
+        console.log('user reserve data', userreserveData);
+        const normalizedIncome = await dfinance_backend.user_normalized_supply(reserve[0][1]);
+        const normalizedDebt = await dfinance_backend.user_normalized_debt(reserve[0][1]);
+
+        const assetPrice = cache[reserveAsset] || 0; // Use cached price
+        console.log(`Normalized Income for ${reserveAsset}:`, normalizedIncome.Ok*userreserveData.asset_supply);
+        console.log(`Normalized Debt for ${reserveAsset}:`, normalizedDebt.Ok);
+        console.log(`Asset price for ${reserveAsset}:`, assetPrice);
+
+        console.log("type",typeof(normalizedIncome.Ok),typeof(assetPrice),typeof(totalCollateral))
+        //totalSupply  += BigInt(normalizedIncome.Ok) * BigInt(assetPrice);
+        //if userreserve.iscollateral { totalCollateral}
+        if (userreserveData.is_collateral) {
+          const collateralValue = Math.round(
+            ((Number(normalizedIncome.Ok) * Number(assetPrice)) / 1e8 * Number(userreserveData.asset_supply)) / 1e8
+          );
+        
+          totalCollateral += collateralValue;
+        
+          if (collateralValue > largestCollateralAsset.value) {
+            largestCollateralAsset = { asset: [reserveAsset], value: collateralValue };
+          }
+        }
+        
+        const debtValue = Math.round(
+          ((Number(normalizedDebt.Ok) * Number(assetPrice)) / 1e8 * Number(userreserveData.asset_borrow)) / 1e8
+        );
+        
+        totalDebt += debtValue;
+        
+        if (debtValue > largestBorrowAsset.value) {
+          largestBorrowAsset = { asset:[reserveAsset], value: debtValue };
+        }
+
+      }
+
+      console.log(`User ${principal} Total Collateral: ${totalCollateral}, Total Debt: ${totalDebt}`);
+console.log("LiquidationThreshold",userData. liquidation_threshold)
+      const position = {
+        total_collateral_value: totalCollateral, // Replace with the actual collateral value
+        total_borrowed_value: totalDebt,         // Replace with the actual borrowed value
+        liquidation_threshold: userData. liquidation_threshold              // Replace with your liquidation threshold
+      };
+      
+      const healthFactor = calculateHealthFactor(position);
+      
+      console.log(`User ${principal} Health Factor (h.f): ${healthFactor}`);
+
+      if (healthFactor > 1e8) {
+        console.log(`User ${principal} is at risk of liquidation!`);
+      
+        
+        const borrowAsset = Array.isArray(largestBorrowAsset.asset) ? largestBorrowAsset.asset[0] : largestBorrowAsset.asset;
+        const collateralAsset = Array.isArray(largestCollateralAsset.asset) ? largestCollateralAsset.asset[0] : largestCollateralAsset.asset;
+      
+       
+        const principalText = principal.toText();
+      
+        console.log("Largest Borrow Asset:", borrowAsset);
+        console.log("Largest Collateral Asset:", collateralAsset);
+        console.log("Principal:", principalText);
+      
+        try {
+          const result = await dfinance_backend.liquidation_call(
+            borrowAsset,         
+            collateralAsset,     
+            largestBorrowAsset.value, 
+            principalText       
+          );
+      
+          console.log(`Liquidation result for ${principalText}:`, result);
+        } catch (error) {
+          console.error(`Error during liquidation call for ${principalText}:`, error);
+        }
+      } 
+    });
+  } catch (error) {
+    console.error(`Error fetching users by asset ${asset}:`, error);
+  }
+}
+
+
+async function startPriceMonitoring(assets) {
+  console.log("Starting price monitoring...");
+
+
+  await updateCacheAndTriggerActions(assets);
+
+  setInterval(async () => {
+    console.log("Checking for price updates...");
+    await updateCacheAndTriggerActions(assets);
+  }, POLLING_INTERVAL);
+}
+
+const assets = ["ICP", "ckBTC", "ckETH", "ckUSDC", "ckUSDT"];
+
+// Start the monitoring process
+startPriceMonitoring(assets);
 
 
 function calculateHealthFactor(position) {
@@ -156,89 +206,8 @@ function calculateHealthFactor(position) {
   return (total_collateral_value * liquidation_threshold) / total_borrowed_value;
 }
 
+//getuserstate
+//exchange rate outside the getUserAccountData, cal it using
+//recalculate total collateral in base currency and total debt -> getUserAccountData
 
-async function getExchangeRate(asset_symbol) {
-  try {
-    const result = await canister.get_exchange_rates(asset_symbol, 'USD', 1);
-    if (result.ok) {
-      const [price, timestamp] = result.ok;
-      return price;
-    } else {
-      console.error(`Error fetching price for ${asset_symbol}:`, result.err);
-      return null;
-    }
-  } catch (error) {
-    console.error(`Failed to get exchange rate for ${asset_symbol}:`, error);
-    return null;
-  }
-}
-
-
-async function checkUserHealthFactor() {
-  try {
-    const userDataResponse = await canister.get_all_users();
-    const userData = userDataResponse.ok ? userDataResponse.ok : [];
-
-    for (const [principal, user] of userData) {
-      const reserves = user.reserves || [];
-      let total_collateral = 0;
-      let total_debt = 0;
-      let largestBorrowAsset = { asset: null, value: 0 };
-      let largestCollateralAsset = { asset: null, value: 0 };
-
-      
-      for (const [asset_symbol, reserveData] of reserves) {
-        const { asset_supply, asset_borrow, is_collateral } = reserveData;
-        
-       
-        const assetSupplyPrice = await getExchangeRate(asset_symbol);
-        const assetBorrowPrice = await getExchangeRate(asset_symbol);
-
-        if (assetSupplyPrice !== null && is_collateral) {
-          const collateralValue = asset_supply * assetSupplyPrice;
-          total_collateral += collateralValue; 
-
-        
-          if (collateralValue > largestCollateralAsset.value) {
-            largestCollateralAsset = { asset: asset_symbol, value: collateralValue };
-          }
-        }
-
-        if (assetBorrowPrice !== null) {
-          const debtValue = asset_borrow * assetBorrowPrice;
-          total_debt += debtValue; 
-
-         
-          if (debtValue > largestBorrowAsset.value) {
-            largestBorrowAsset = { asset: asset_symbol, value: debtValue };
-          }
-        }
-      }
-
-      const position = {
-        total_collateral_value: total_collateral,
-        total_borrowed_value: total_debt,
-        liquidation_threshold: user.liquidation_threshold || 0,
-      };
-
-      const healthFactor = calculateHealthFactor(position);
-
-      if (healthFactor < 1 && largestBorrowAsset.asset && largestCollateralAsset.asset) {
-       
-        triggerLiquidation(
-          largestBorrowAsset.asset,
-          largestCollateralAsset.asset,
-          total_debt,
-          principal
-        );
-      }
-    }
-  } catch (error) {
-    console.error('Error fetching user data from canister:', error);
-  }
-}
-
-// Set interval to check user health factor every minute
-setInterval(() => {
-  checkUserHealthFactor();
-}, 3600000);
+//cal. health factor - 
